@@ -324,9 +324,19 @@ status_info(#nat_upnp{service_url=Url}) ->
 %% internals
 
 get_service_url(RootUrl) ->
-    case httpc:request(RootUrl) of
+    case hackney:request(RootUrl) of
         {ok, {{_, 200, _}, _, Body}} ->
             {Xml, _} = xmerl_scan:string(Body, [{space, normalize}]),
+            [Device | _] = xmerl_xpath:string("//device", Xml),
+            case device_type(Device) of
+                "urn:schemas-upnp-org:device:InternetGatewayDevice:1" ->
+                    get_wan_device(Device, RootUrl);
+                _ ->
+                    {error,  no_gateway_device}
+            end;
+        {ok, 200, _RespHeaders, ClientRef} -> 
+            {ok, Body} = hackney:body(ClientRef),
+            {Xml, _} = xmerl_scan:string(unicode:characters_to_list(Body), [{space, normalize}]),
             [Device | _] = xmerl_xpath:string("//device", Xml),
             case device_type(Device) of
                 "urn:schemas-upnp-org:device:InternetGatewayDevice:1" ->
