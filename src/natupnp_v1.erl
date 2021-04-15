@@ -115,6 +115,9 @@ get_external_address(#nat_upnp{service_url=Url}) ->
     Message = "<u:GetExternalIPAddress xmlns:u=\""
     "urn:schemas-upnp-org:service:WANIPConnection:1\">"
     "</u:GetExternalIPAddress>",
+    MessagePPP = "<u:GetExternalIPAddress xmlns:u=\""
+    "urn:schemas-upnp-org:service:WANPPPConnection:1\">"
+    "</u:GetExternalIPAddress>",
     case nat_lib:soap_request(Url, "GetExternalIPAddress", Message) of
         {ok, Body} ->
             {Xml, _} = xmerl_scan:string(Body, [{space, normalize}]),
@@ -129,7 +132,22 @@ get_external_address(#nat_upnp{service_url=Url}) ->
 
             {ok, IP};
         Error ->
-            Error
+            case nat_lib:soap_request(Url, "GetExternalIPAddress", MessagePPP) of
+            {ok, Body} ->
+                {Xml, _} = xmerl_scan:string(Body, [{space, normalize}]),
+
+                [Infos | _] = xmerl_xpath:string("//s:Envelope/s:Body/"
+                                                "*[local-name() = 'GetExternalIPAddressResponse']", Xml),
+
+                IP = extract_txt(
+                    xmerl_xpath:string("NewExternalIPAddress/text()",
+                                        Infos)
+                    ),
+
+                {ok, IP};
+            Error ->
+                Error
+        end
     end.
 
 get_internal_address(#nat_upnp{ip=Ip}) ->
@@ -187,6 +205,20 @@ add_port_mapping1(#nat_upnp{ip=Ip, service_url=Url}=NatCtx,
     "</NewPortMappingDescription>"
     "<NewLeaseDuration>" ++ integer_to_list(Lifetime) ++
     "</NewLeaseDuration></u:AddPortMapping>",
+    MsgPPP = "<u:AddPortMapping xmlns:u=\""
+    "urn:schemas-upnp-org:service:WANPPPConnection:1\">"
+    "<NewRemoteHost></NewRemoteHost>"
+    "<NewExternalPort>" ++  integer_to_list(ExternalPort) ++
+    "</NewExternalPort>"
+    "<NewProtocol>" ++ Protocol ++ "</NewProtocol>"
+    "<NewInternalPort>" ++ integer_to_list(InternalPort) ++
+    "</NewInternalPort>"
+    "<NewInternalClient>" ++ Ip ++ "</NewInternalClient>"
+    "<NewEnabled>1</NewEnabled>"
+    "<NewPortMappingDescription>" ++ Description ++
+    "</NewPortMappingDescription>"
+    "<NewLeaseDuration>" ++ integer_to_list(Lifetime) ++
+    "</NewLeaseDuration></u:AddPortMapping>",
     {ok, IAddr} = inet:parse_address(Ip),
     Start = nat_lib:timestamp(),
     case nat_lib:soap_request(Url, "AddPortMapping", Msg, [{socket_opts, [{ip, IAddr}]}]) of
@@ -209,7 +241,28 @@ add_port_mapping1(#nat_upnp{ip=Ip, service_url=Url}=NatCtx,
                     Error
               end;
         Error ->
-            Error
+            case nat_lib:soap_request(Url, "AddPortMapping", MsgPPP, [{socket_opts, [{ip, IAddr}]}]) of
+            {ok, _} ->
+                Now = nat_lib:timestamp(),
+                MappingLifetime = if
+                                    Lifetime > 0 ->
+                                    Lifetime - (Now - Start);
+                                    true ->
+                                    infinity
+                                end,
+                {ok, Now, InternalPort, ExternalPort, MappingLifetime};
+            Error when Lifetime > 0 ->
+                %% Try to repair error code 725 - OnlyPermanentLeasesSupported
+                case only_permanent_lease_supported(Error) of
+                    true ->
+                        error_logger:info_msg("UPNP: only permanent lease supported~n", []),
+                        add_port_mapping1(NatCtx, Protocol, InternalPort, ExternalPort, 0);
+                    false ->
+                        Error
+                end;
+            Error ->
+                Error
+        end
     end.
 
 only_permanent_lease_supported({error, {http_error, "500", Body}}) ->
@@ -241,10 +294,21 @@ delete_port_mapping(#nat_upnp{ip=Ip, service_url=Url}, Protocol0, _InternalPort,
     "</NewExternalPort>"
     "<NewProtocol>" ++ Protocol ++ "</NewProtocol>"
     "</u:DeletePortMapping>",
+    MsgPPP = "<u:DeletePortMapping xmlns:u=\""
+    "urn:schemas-upnp-org:service:WANPPPConnection:1\">"
+    "<NewRemoteHost></NewRemoteHost>"
+    "<NewExternalPort>" ++ integer_to_list(ExternalPort) ++
+    "</NewExternalPort>"
+    "<NewProtocol>" ++ Protocol ++ "</NewProtocol>"
+    "</u:DeletePortMapping>",
     {ok, IAddr} = inet:parse_address(Ip),
     case nat_lib:soap_request(Url, "DeletePortMapping", Msg, [{socket_opts, [{ip, IAddr}]}]) of
         {ok, _} -> ok;
-        Error -> Error
+        Error -> 
+            case nat_lib:soap_request(Url, "DeletePortMapping", MsgPPP, [{socket_opts, [{ip, IAddr}]}]) of
+                {ok, _} -> ok;
+                Error -> Error
+    end
     end.
 
 %% @doc get specific port mapping for a well known port and protocol
@@ -256,6 +320,13 @@ get_port_mapping(#nat_upnp{ip=Ip, service_url=Url}, Protocol0, ExternalPort) ->
    Protocol = protocol(Protocol0),
     Msg = "<u:GetSpecificPortMappingEntry xmlns:u=\""
     "urn:schemas-upnp-org:service:WANIPConnection:1\">"
+    "<NewRemoteHost></NewRemoteHost>"
+    "<NewExternalPort>" ++ integer_to_list(ExternalPort) ++
+    "</NewExternalPort>"
+    "<NewProtocol>" ++ Protocol ++ "</NewProtocol>"
+    "</u:GetSpecificPortMappingEntry>",
+    MsgPPP = "<u:GetSpecificPortMappingEntry xmlns:u=\""
+    "urn:schemas-upnp-org:service:WANPPPConnection:1\">"
     "<NewRemoteHost></NewRemoteHost>"
     "<NewExternalPort>" ++ integer_to_list(ExternalPort) ++
     "</NewExternalPort>"
@@ -282,7 +353,28 @@ get_port_mapping(#nat_upnp{ip=Ip, service_url=Url}, Protocol0, ExternalPort) ->
             {IPort, _ } = string:to_integer(NewInternalPort),
             {ok, IPort, NewInternalClient};
         Error ->
-            Error
+            case nat_lib:soap_request(Url, "GetSpecificPortMappingEntry", MsgPPP, [{socket_opts, [{ip, IAddr}]}]) of
+                {ok, Body} ->
+                    {Xml, _} = xmerl_scan:string(Body, [{space, normalize}]),
+                    [Infos | _] = xmerl_xpath:string("//s:Envelope/s:Body/"
+                                                    "u:GetSpecificPortMappingEntryResponse", Xml),
+                    NewInternalPort =
+                    extract_txt(
+                    xmerl_xpath:string("NewInternalPort/text()",
+                                        Infos)
+                    ),
+
+                    NewInternalClient =
+                    extract_txt(
+                    xmerl_xpath:string("NewInternalClient/text()",
+                                        Infos)
+                    ),
+
+                    {IPort, _ } = string:to_integer(NewInternalPort),
+                    {ok, IPort, NewInternalClient};
+                Error ->
+                    Error
+            end
     end.
 
 
@@ -293,6 +385,9 @@ get_port_mapping(#nat_upnp{ip=Ip, service_url=Url}, Protocol0, ExternalPort) ->
 status_info(#nat_upnp{service_url=Url}) ->
     Message = "<u:GetStatusInfo xmlns:u=\""
     "urn:schemas-upnp-org:service:WANIPConnection:1\">"
+    "</u:GetStatusInfo>",
+    MessagePPP = "<u:GetStatusInfo xmlns:u=\""
+    "urn:schemas-upnp-org:service:WANPPPConnection:1\">"
     "</u:GetStatusInfo>",
     case nat_lib:soap_request(Url, "GetStatusInfo", Message) of
         {ok, Body} ->
@@ -317,7 +412,31 @@ status_info(#nat_upnp{service_url=Url}) ->
                       ),
             {Status, LastConnectionError, Uptime};
         Error ->
-            Error
+            case nat_lib:soap_request(Url, "GetStatusInfo", MessagePPP) of
+                {ok, Body} ->
+                    {Xml, _} = xmerl_scan:string(Body, [{space, normalize}]),
+
+                    [Infos | _] = xmerl_xpath:string("//s:Envelope/s:Body/"
+                                                    "u:GetStatusInfoResponse", Xml),
+
+                    Status = extract_txt(
+                            xmerl_xpath:string("NewConnectionStatus/text()",
+                                                Infos)
+                            ),
+
+                    LastConnectionError = extract_txt(
+                                            xmerl_xpath:string("NewLastConnectionError/text()",
+                                                            Infos)
+                                        ),
+
+                    Uptime = extract_txt(
+                            xmerl_xpath:string("NewUptime/text()",
+                                                Infos)
+                            ),
+                    {Status, LastConnectionError, Uptime};
+                Error ->
+                    Error
+            end
     end.
 
 
@@ -388,7 +507,27 @@ get_connection_url(D, RootUrl) ->
 
             end;
         _ ->
-            {error, no_wanipconnection}
+            case get_service(D, "urn:schemas-upnp-org:service:WANPPPConnection:1") of
+                {ok, S} ->
+                    Url = extract_txt(xmerl_xpath:string("controlURL/text()",
+                                                        S)),
+                    case split(RootUrl, "://") of
+                        [Scheme, Rest] ->
+                            case split(Rest, "/") of
+                                [NetLoc| _] ->
+                                    CtlUrl = Scheme ++ "://" ++ NetLoc ++ Url,
+                                    {ok, CtlUrl};
+                                _Else ->
+                                    {error, invalid_control_url}
+                            end;
+                        _Else ->
+
+                            {error, invalid_control_url}
+
+                    end;
+                _ ->
+                    {error, no_wanipconnection}
+            end
     end.
 
 
