@@ -131,7 +131,7 @@ get_external_address(#nat_upnp{service_url=Url}) ->
                   ),
 
             {ok, IP};
-        Error ->
+        _Error ->
             case nat_lib:soap_request(Url, "GetExternalIPAddress", MessagePPP) of
             {ok, Body} ->
                 {Xml, _} = xmerl_scan:string(Body, [{space, normalize}]),
@@ -242,26 +242,26 @@ add_port_mapping1(#nat_upnp{ip=Ip, service_url=Url}=NatCtx,
               end;
         Error ->
             case nat_lib:soap_request(Url, "AddPortMapping", MsgPPP, [{socket_opts, [{ip, IAddr}]}]) of
-            {ok, _} ->
-                Now = nat_lib:timestamp(),
-                MappingLifetime = if
-                                    Lifetime > 0 ->
-                                    Lifetime - (Now - Start);
-                                    true ->
-                                    infinity
-                                end,
-                {ok, Now, InternalPort, ExternalPort, MappingLifetime};
-            Error when Lifetime > 0 ->
-                %% Try to repair error code 725 - OnlyPermanentLeasesSupported
-                case only_permanent_lease_supported(Error) of
-                    true ->
-                        error_logger:info_msg("UPNP: only permanent lease supported~n", []),
-                        add_port_mapping1(NatCtx, Protocol, InternalPort, ExternalPort, 0);
-                    false ->
-                        Error
-                end;
-            Error ->
-                Error
+                {ok, _} ->
+                    Now = nat_lib:timestamp(),
+                    MappingLifetime = if
+                                        Lifetime > 0 ->
+                                        Lifetime - (Now - Start);
+                                        true ->
+                                        infinity
+                                    end,
+                    {ok, Now, InternalPort, ExternalPort, MappingLifetime};
+                Error2 when Lifetime > 0 ->
+                    %% Try to repair error code 725 - OnlyPermanentLeasesSupported
+                    case only_permanent_lease_supported(Error) of
+                        true ->
+                            error_logger:info_msg("UPNP: only permanent lease supported~n", []),
+                            add_port_mapping1(NatCtx, Protocol, InternalPort, ExternalPort, 0);
+                        false ->
+                            Error
+                    end;
+                Error2 ->
+                    Error2
         end
     end.
 
@@ -304,11 +304,11 @@ delete_port_mapping(#nat_upnp{ip=Ip, service_url=Url}, Protocol0, _InternalPort,
     {ok, IAddr} = inet:parse_address(Ip),
     case nat_lib:soap_request(Url, "DeletePortMapping", Msg, [{socket_opts, [{ip, IAddr}]}]) of
         {ok, _} -> ok;
-        Error -> 
+        _Error -> 
             case nat_lib:soap_request(Url, "DeletePortMapping", MsgPPP, [{socket_opts, [{ip, IAddr}]}]) of
                 {ok, _} -> ok;
                 Error -> Error
-    end
+        end
     end.
 
 %% @doc get specific port mapping for a well known port and protocol
@@ -352,7 +352,7 @@ get_port_mapping(#nat_upnp{ip=Ip, service_url=Url}, Protocol0, ExternalPort) ->
 
             {IPort, _ } = string:to_integer(NewInternalPort),
             {ok, IPort, NewInternalClient};
-        Error ->
+        _Error ->
             case nat_lib:soap_request(Url, "GetSpecificPortMappingEntry", MsgPPP, [{socket_opts, [{ip, IAddr}]}]) of
                 {ok, Body} ->
                     {Xml, _} = xmerl_scan:string(Body, [{space, normalize}]),
@@ -411,7 +411,7 @@ status_info(#nat_upnp{service_url=Url}) ->
                                           Infos)
                       ),
             {Status, LastConnectionError, Uptime};
-        Error ->
+        _Error ->
             case nat_lib:soap_request(Url, "GetStatusInfo", MessagePPP) of
                 {ok, Body} ->
                     {Xml, _} = xmerl_scan:string(Body, [{space, normalize}]),
