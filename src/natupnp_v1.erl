@@ -414,7 +414,6 @@ get_device(Device, DeviceType) ->
 
 
 get_service_name(ServiceUrl) ->
-    io:fwrite("Hello world222!~p~n", [ServiceUrl]),
     MessageIP = "<u:GetStatusInfo xmlns:u=\""
     "urn:schemas-upnp-org:service:WANIPConnection:1\">"
     "</u:GetStatusInfo>",
